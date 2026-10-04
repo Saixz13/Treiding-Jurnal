@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Trade Journal 40×20%</title>
+  
+  <!-- Telegram WebApp API -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <!-- Tailwind CSS для стилей -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React & ReactDOM -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <!-- Babel для работы React внутри браузера -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <style>
+    body { 
+      background-color: #0f172a; 
+      color: #f8fafc; 
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    }
+    input[type="number"]::-webkit-outer-spin-button,
+    input[type="number"]::-webkit-inner-spin-button {
+        -webkit-appearance: none; margin: 0;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    const tg = window.Telegram?.WebApp;
+    const isTgStorageAvailable = tg?.CloudStorage !== undefined;
+
+    // Слой хранения данных (ТГ Облако или браузер локально)
+    const StorageAPI = {
+      setItem: (key, value) => new Promise((resolve, reject) => {
+        if (isTgStorageAvailable) {
+          tg.CloudStorage.setItem(key, value, (err) => err ? reject(err) : resolve());
+        } else {
+          localStorage.setItem(key, value);
+          resolve();
+        }
+      }),
+      getItem: (key) => new Promise((resolve, reject) => {
+        if (isTgStorageAvailable) {
+          tg.CloudStorage.getItem(key, (err, val) => err ? reject(err) : resolve(val || null));
+        } else {
+          resolve(localStorage.getItem(key));
+        }
+      }),
+      getKeys: () => new Promise((resolve, reject) => {
+        if (isTgStorageAvailable) {
+          tg.CloudStorage.getKeys((err, keys) => err ? reject(err) : resolve(keys || []));
+        } else {
+          resolve(Object.keys(localStorage));
+        }
+      })
+    };
+
+    function App() {
+      const [settings, setSettings] = useState({ currentDayIndex: 1 });
+      const [days, setDays] = useState({});
+      const [loading, setLoading] = useState(true);
+      const [tradeInput, setTradeInput] = useState("");
+
+      useEffect(() => {
+        if (tg) {
+          tg.ready();
+          tg.expand();
+        }
+        
+        async function init() {
+          try {
+            const s = await StorageAPI.getItem('app_settings');
+            if (s) setSettings(JSON.parse(s));
+            
+            const keys = await StorageAPI.getKeys();
+            const dayKeys = keys.filter(k => k.startsWith('day_'));
+            const loadedDays = {};
+            
+            for (let key of dayKeys) {
+               const data = await StorageAPI.getItem(key);
+               if (data) {
+                  const parsed = JSON.parse(data);
+                  loadedDays[parsed.dayIndex] = parsed;
+               }
+            }
+            setDays(loadedDays);
+          } catch (e) {
+            console.error("Ошибка загрузки данных", e);
+          } finally {
+            setLoading(false);
+          }
+        }
+        init();
+      }, []);
+
+      const addTrade = async () => {
+         const val = parseFloat(tradeInput.replace(',', '.'));
+         if (isNaN(val)) return;
+
+         const currentDayIndex = settings.currentDayIndex;
+         const currentDay = days[currentDayIndex] || {
+           dayIndex: currentDayIndex,
+           trades: [],
+           totalPercentage: 0,
+           isCompleted: false
+         };
+
+         const newTrades = [...currentDay.trades, { id: Date.now(), percentage: val }];
+         const newTotal = newTrades.reduce((acc, t) => acc + t.percentage, 0);
+         const isCompleted = newTotal >= 20;
+
+         const updatedDay = {
+           ...currentDay,
+           trades: newTrades,
+           totalPercentage: parseFloat(newTotal.toFixed(2)),
+           isCompleted
+         };
+
+         setDays({ ...days, [currentDayIndex]: updatedDay });
+         await StorageAPI.setItem(`day_${currentDayIndex}`, JSON.stringify(updatedDay));
+         setTradeInput("");
+         
+         if (tg?.HapticFeedback) tg.HapticFeedback.impactOccurred(isCompleted ? 'heavy' : 'light');
+
+         if (isCompleted && currentDayIndex < 40) {
+            const newSettings = { ...settings, currentDayIndex: currentDayIndex + 1 };
+            setSettings(newSettings);
+            await StorageAPI.setItem('app_settings', JSON.stringify(newSettings));
+         }
+      };
+
+      if (loading) {
+        return (
+          <div className="flex items-center justify-center h-screen">
+            <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-blue-500"></div>
+          </div>
+        );
+      }
+
+      const currentDay = days[settings.currentDayIndex] || { totalPercentage: 0, trades: [] };
+      const progress = Math.min((currentDay.totalPercentage / 20) * 100, 100);
+      const completedDays = Object.values(days).filter(d => d.isCompleted).length;
+
+      return (
+        <div className="max-w-md mx-auto p-4 space-y-6 pb-12">
+           <div className="text-center mt-2">
+             <h1 className="text-2xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-emerald-400">
+               Trade Journal
+             </h1>
+             <p className="text-slate-400 text-sm mt-1">Цель: 40 дней по +20%</p>
+           </div>
+           
+           <div className="grid grid-cols-2 gap-3">
+              <div className="bg-slate-800 p-3 rounded-xl border border-slate-700 text-center shadow-lg">
+                <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">Текущий день</p>
+                <p className="text-2xl font-bold text-blue-400">#{settings.currentDayIndex}</p>
+              </div>
+              <div className="bg-slate-800 p-3 rounded-xl border border-slate-700 text-center shadow-lg">
+                <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">Закрыто дней</p>
+                <p className="text-2xl font-bold text-emerald-400">{completedDays} / 40</p>
+              </div>
+           </div>
+           
+           <div className="bg-slate-800 p-5 rounded-2xl shadow-xl border border-slate-700">
+             <div className="flex justify-between items-end mb-3">
+               <h2 className="text-lg font-semibold text-slate-200">Прогресс за день</h2>
+               <span className={`text-xl font-bold ${currentDay.totalPercentage >= 20 ? 'text-emerald-400' : 'text-blue-400'}`}>
+                 {currentDay.totalPercentage}% <span className="text-sm text-slate-500 font-normal">/ 20%</span>
+               </span>
+             </div>
+             
+             <div className="w-full bg-slate-900 rounded-full h-4 mb-6 border border-slate-700 overflow-hidden">
+               <div 
+                 className={`h-4 rounded-full transition-all duration-700 ease-out ${currentDay.totalPercentage >= 20 ? 'bg-emerald-500' : 'bg-blue-500'}`} 
+                 style={{width: `${Math.max(0, progress)}%`}}
+               ></div>
+             </div>
+
+             <div className="flex space-x-3">
+               <div className="relative flex-1">
+                 <input 
+                   type="number"
+                   inputMode="decimal"
+                   placeholder="Процент прибыли"
+                   className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-4 pr-10 py-3 text-white focus:outline-none focus:border-blue-500 transition-colors"
+                   value={tradeInput}
+                   onChange={e => setTradeInput(e.target.value)}
+                   onKeyDown={e => e.key === 'Enter' && addTrade()}
+                 />
+                 <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">%</span>
+               </div>
+               
+               <button 
+                 onClick={addTrade}
+                 disabled={!tradeInput}
+                 className="bg-blue-600 disabled:bg-slate-700 hover:bg-blue-500 text-white font-bold py-3 px-5 rounded-xl transition-all shadow-lg active:scale-95"
+               >
+                 +
+               </button>
+             </div>
+           </div>
+
+           <div>
+             <h3 className="text-sm font-semibold mb-3 text-slate-400 uppercase tracking-widest pl-1">Сделки сегодня</h3>
+             {currentDay.trades.length === 0 ? (
+               <div className="text-center p-6 bg-slate-800/50 rounded-xl border border-slate-700 border-dashed">
+                 <p className="text-slate-500 text-sm">Сделок пока нет. Добавьте первую!</p>
+               </div>
+             ) : (
+               <div className="space-y-2">
+                 {currentDay.trades.slice().reverse().map((t, i) => (
+                   <div key={t.id} className="bg-slate-800 p-4 rounded-xl flex justify-between items-center border border-slate-700">
+                     <span className="text-slate-400 text-sm font-medium">Сделка #{currentDay.trades.length - i}</span>
+                     <span className={`font-bold text-lg ${t.percentage >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                       {t.percentage > 0 ? '+' : ''}{t.percentage}%
+                     </span>
+                   </div>
+                 ))}
+               </div>
+             )}
+           </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
